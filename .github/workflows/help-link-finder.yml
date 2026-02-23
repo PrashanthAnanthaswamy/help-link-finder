@@ -1,0 +1,142 @@
+name: Help Link Finder
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_mode:
+        description: "Input mode: 'csv' (use CSV file in repo) or 'sitemap'"
+        required: true
+        default: "csv"
+        type: choice
+        options:
+          - csv
+          - sitemap
+      csv_file:
+        description: "CSV file path (for csv mode). Upload CSVs to the inputs/ folder via drag-and-drop."
+        required: false
+        default: "sample_urls.csv"
+        type: string
+      sitemap_url:
+        description: "Sitemap URL (required if input_mode=sitemap). Can be a full sitemap.xml URL or a domain."
+        required: false
+        default: ""
+        type: string
+      pattern:
+        description: "Regex pattern to match link paths (default: /help)"
+        required: false
+        default: "(/help)(/.*)?"
+        type: string
+      timeout:
+        description: "HTTP timeout in seconds"
+        required: false
+        default: "30"
+        type: string
+      max_concurrent:
+        description: "Max concurrent page checks"
+        required: false
+        default: "10"
+        type: string
+      batch:
+        description: "Batch number (1-based). Leave empty to run all URLs at once."
+        required: false
+        default: ""
+        type: string
+      batch_size:
+        description: "Number of URLs per batch (default: 1000)"
+        required: false
+        default: "1000"
+        type: string
+      skip_screenshots:
+        description: "Skip screenshots"
+        required: false
+        default: false
+        type: boolean
+
+
+permissions:
+  contents: read
+
+jobs:
+  find-help-links:
+    name: Scan pages for /help entry points
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run help link finder (CSV mode)
+        if: ${{ inputs.input_mode == 'csv' }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.skip_screenshots }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-screenshots"
+          fi
+          if [ -n "${{ inputs.batch }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --batch ${{ inputs.batch }} --batch-size ${{ inputs.batch_size || '1000' }}"
+          fi
+          python main.py "${{ inputs.csv_file || 'sample_urls.csv' }}" \
+            -o reports \
+            --screenshot-dir reports/screenshots \
+            --pattern '${{ inputs.pattern || '(/help)(/.*)?' }}' \
+            --timeout ${{ inputs.timeout || '30' }} \
+            --max-concurrent ${{ inputs.max_concurrent || '10' }} \
+            --verbose \
+            $EXTRA_ARGS
+
+      - name: Run help link finder (Sitemap mode)
+        if: ${{ inputs.input_mode == 'sitemap' && inputs.sitemap_url != '' }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.skip_screenshots }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --no-screenshots"
+          fi
+          if [ -n "${{ inputs.batch }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --batch ${{ inputs.batch }} --batch-size ${{ inputs.batch_size || '1000' }}"
+          fi
+          python main.py \
+            --sitemap "${{ inputs.sitemap_url }}" \
+            -o reports \
+            --screenshot-dir reports/screenshots \
+            --pattern '${{ inputs.pattern || '(/help)(/.*)?' }}' \
+            --timeout ${{ inputs.timeout || '30' }} \
+            --max-concurrent ${{ inputs.max_concurrent || '10' }} \
+            --verbose \
+            $EXTRA_ARGS
+
+      - name: Upload report bundle as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: help-link-report-${{ github.run_number }}${{ inputs.batch && format('-batch{0}', inputs.batch) || '' }}
+          path: reports/
+          retention-days: 30
+
+      - name: Print summary
+        if: always()
+        run: |
+          echo "## Help Link Finder Results" >> $GITHUB_STEP_SUMMARY
+
+          REPORT_FILE=$(ls -t reports/*.html 2>/dev/null | head -1)
+          if [ -z "$REPORT_FILE" ]; then
+            echo "No report generated." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Report generated: \`$REPORT_FILE\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the full report (HTML + screenshots) from the **Artifacts** section above." >> $GITHUB_STEP_SUMMARY
